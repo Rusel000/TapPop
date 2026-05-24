@@ -11,27 +11,32 @@ import {
 } from "react-native";
 
 import { StatusBar } from "expo-status-bar";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const { width, height } = Dimensions.get("window");
 
 export default function HomeScreen() {
-  /* =========================
-     NAVIGATION
-  ========================= */
   const [screen, setScreen] = useState("home");
 
-  /* =========================
-     GAME STATE
-  ========================= */
   const [score, setScore] = useState(0);
+  const [combo, setCombo] = useState(0);
+
   const [timeLeft, setTimeLeft] = useState(30);
   const [gameStarted, setGameStarted] = useState(false);
 
   const [isBadCircle, setIsBadCircle] = useState(false);
-  const [showBadCircle, setShowBadCircle] = useState(false);
-
   const [showJumpScare, setShowJumpScare] = useState(false);
   const [badTapCount, setBadTapCount] = useState(0);
+
+  const [difficulty, setDifficulty] = useState(1);
+
+  // GAME MODE
+  const [gameMode, setGameMode] = useState("normal");
+
+  // BEST SCORES
+  const [bestScore, setBestScore] = useState(0);
+  const [bestEndlessScore, setBestEndlessScore] =
+    useState(0);
 
   const [circlePosition, setCirclePosition] = useState({
     x: 100,
@@ -39,21 +44,97 @@ export default function HomeScreen() {
   });
 
   const scaleAnim = useRef(new Animated.Value(1)).current;
+  const shakeAnim = useRef(new Animated.Value(0)).current;
+
+  const autoMoveRef = useRef(null);
+  const difficultyRef = useRef(null);
 
   /* =========================
-     ANIMATION
+     LOAD BEST SCORES
+  ========================= */
+  useEffect(() => {
+    loadBestScores();
+  }, []);
+
+  const loadBestScores = async () => {
+    try {
+      const normal = await AsyncStorage.getItem(
+        "bestScore"
+      );
+
+      const endless = await AsyncStorage.getItem(
+        "bestEndlessScore"
+      );
+
+      if (normal) {
+        setBestScore(Number(normal));
+      }
+
+      if (endless) {
+        setBestEndlessScore(Number(endless));
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  /* =========================
+     SAVE BEST SCORE
+  ========================= */
+  const saveBestScore = async () => {
+    try {
+      // NORMAL MODE
+      if (gameMode === "normal") {
+        if (score > bestScore) {
+          setBestScore(score);
+
+          await AsyncStorage.setItem(
+            "bestScore",
+            String(score)
+          );
+        }
+      }
+
+      // ENDLESS MODE
+      if (gameMode === "endless") {
+        if (score > bestEndlessScore) {
+          setBestEndlessScore(score);
+
+          await AsyncStorage.setItem(
+            "bestEndlessScore",
+            String(score)
+          );
+        }
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  /* =========================
+     AUTO SAVE WHEN GAME ENDS
+  ========================= */
+  useEffect(() => {
+    if (timeLeft <= 0 && gameStarted) {
+      saveBestScore();
+    }
+  }, [timeLeft]);
+
+  /* =========================
+     PULSE ANIMATION
   ========================= */
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
         Animated.timing(scaleAnim, {
-          toValue: 1.2,
-          duration: 450,
+          toValue: 1.15,
+          duration: 400,
           useNativeDriver: true,
         }),
+
         Animated.timing(scaleAnim, {
           toValue: 1,
-          duration: 450,
+          duration: 400,
           useNativeDriver: true,
         }),
       ])
@@ -61,86 +142,227 @@ export default function HomeScreen() {
   }, []);
 
   /* =========================
+     SCREEN SHAKE
+  ========================= */
+  const triggerShake = () => {
+    Animated.sequence([
+      Animated.timing(shakeAnim, {
+        toValue: 10,
+        duration: 40,
+        useNativeDriver: true,
+      }),
+
+      Animated.timing(shakeAnim, {
+        toValue: -10,
+        duration: 40,
+        useNativeDriver: true,
+      }),
+
+      Animated.timing(shakeAnim, {
+        toValue: 6,
+        duration: 40,
+        useNativeDriver: true,
+      }),
+
+      Animated.timing(shakeAnim, {
+        toValue: 0,
+        duration: 40,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  /* =========================
      TIMER
   ========================= */
   useEffect(() => {
-    let timer: any;
+    let timer;
 
     if (gameStarted && timeLeft > 0) {
       timer = setInterval(() => {
-        setTimeLeft((prev) => prev - 1);
-      }, 1000);
+        setTimeLeft((prev) => {
+          // ENDLESS MODE
+          if (gameMode === "endless") {
+            return Math.max(prev - 0.05, 0);
+          }
+
+          // NORMAL MODE
+          return prev - 1;
+        });
+      }, gameMode === "endless" ? 100 : 1000);
     }
 
     return () => clearInterval(timer);
-  }, [gameStarted, timeLeft]);
+  }, [gameStarted, gameMode]);
+
+  /* =========================
+     DIFFICULTY SYSTEM
+  ========================= */
+  useEffect(() => {
+    if (!gameStarted) return;
+
+    setDifficulty(1);
+
+    const interval = setInterval(() => {
+      setDifficulty((prev) => prev + 1);
+    }, gameMode === "endless" ? 6000 : 10000);
+
+    difficultyRef.current = interval;
+
+    return () => clearInterval(interval);
+  }, [gameStarted, gameMode]);
+
+  /* =========================
+     CLEANUP
+  ========================= */
+  useEffect(() => {
+    return () => {
+      if (autoMoveRef.current) {
+        clearTimeout(autoMoveRef.current);
+      }
+
+      if (difficultyRef.current) {
+        clearInterval(difficultyRef.current);
+      }
+    };
+  }, []);
 
   /* =========================
      MOVE CIRCLE
   ========================= */
   const moveCircle = () => {
+    if (!gameStarted) return;
+
     const size = 90;
 
     const randomX = Math.random() * (width - size - 40);
-    const randomY = Math.random() * (height - 350);
+    const topSafeArea = 180;
+    const randomY = Math.random() * (height - 420) + topSafeArea;
 
-    setCirclePosition({ x: randomX, y: randomY });
+    // LESS RED DOTS
+    const badChance = Math.min(
+      0.12 + difficulty * 0.04,
+      0.45
+    );
 
-    const bad = Math.random() < 0.3;
+    const bad = Math.random() < badChance;
+
+    setCirclePosition({
+      x: randomX,
+      y: randomY,
+    });
+
     setIsBadCircle(bad);
-    setShowBadCircle(bad);
+
+    const speed = Math.max(
+      1200 - difficulty * 140,
+      300
+    );
+
+    if (autoMoveRef.current) {
+      clearTimeout(autoMoveRef.current);
+    }
+
+    autoMoveRef.current = setTimeout(() => {
+      moveCircle();
+    }, Math.random() * speed + 300);
   };
 
   /* =========================
-     TAP
+     TAP LOGIC
   ========================= */
   const handleTap = () => {
     if (isBadCircle) {
-      setScore((p) => Math.max(p - 1, 0));
+      triggerShake();
 
-      setBadTapCount((p) => {
-        const next = p + 1;
+      setCombo(0);
+
+      setScore((prev) => Math.max(prev - 1, 0));
+
+      setBadTapCount((prev) => {
+        const next = prev + 1;
 
         if (next >= 3) {
           setShowJumpScare(true);
-          setTimeout(() => setShowJumpScare(false), 1200);
+
+          setTimeout(() => {
+            setShowJumpScare(false);
+          }, 1200);
+
           return 0;
         }
 
         return next;
       });
+    } else {
+      setCombo((prev) => prev + 1);
 
-      moveCircle();
-      return;
+      setScore((prev) => prev + 1 + Math.floor(combo / 5));
+
+      // ENDLESS MODE BONUS TIME
+      if (gameMode === "endless") {
+        setTimeLeft((prev) =>
+          Math.min(prev + 1, 999)
+        );
+      }
     }
 
-    setScore((p) => p + 1);
     moveCircle();
   };
 
   /* =========================
-     GAME INIT (FIXED)
+     INIT GAME
   ========================= */
-  const initGame = () => {
+  const initGame = (mode = "normal") => {
+    setGameMode(mode);
+
     setScore(0);
-    setTimeLeft(30);
+
+    setCombo(0);
+
     setBadTapCount(0);
+
+    setDifficulty(1);
+
     setGameStarted(true);
-    moveCircle();
+
+    if (mode === "endless") {
+      setTimeLeft(25);
+    } else {
+      setTimeLeft(30);
+    }
+
+    setTimeout(() => {
+      moveCircle();
+    }, 100);
   };
 
   const startGame = () => {
-    initGame();
+    initGame("normal");
     setScreen("game");
   };
 
   const quickPlay = () => {
-    initGame();
+    initGame("normal");
+    setScreen("game");
+  };
+
+  const endlessMode = () => {
+    initGame("endless");
     setScreen("game");
   };
 
   const goHome = () => {
     setGameStarted(false);
+
+    if (autoMoveRef.current) {
+      clearTimeout(autoMoveRef.current);
+    }
+
+    if (difficultyRef.current) {
+      clearInterval(difficultyRef.current);
+    }
+
     setScreen("home");
   };
 
@@ -152,24 +374,60 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.container}>
         <StatusBar style="light" />
 
-        <View style={styles.imageCircle}>
-          <Image
-            source={{
-              uri: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQXWGrK2iGOudNC5T56IpLZxstjchYgtKv4Jw&s",
-            }}
-            style={styles.circleImage}
-          />
+        <View style={styles.glowCircle}>
+          <View style={styles.imageCircle}>
+            <Image
+              source={{
+                uri: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQXWGrK2iGOudNC5T56IpLZxstjchYgtKv4Jw&s",
+              }}
+              style={styles.circleImage}
+            />
+          </View>
         </View>
 
         <Text style={styles.logo}>VOID TAP</Text>
-        <Text style={styles.subtitle}>Tap. Survive. Don’t trust the red.</Text>
 
-        <TouchableOpacity style={styles.primaryBtn} onPress={startGame}>
-          <Text style={styles.primaryBtnText}>START GAME</Text>
+        <Text style={styles.subtitle}>
+          Tap. Survive. Don’t trust the red.
+        </Text>
+
+        {/* BEST SCORES */}
+        <View style={styles.bestContainer}>
+          <Text style={styles.bestText}>
+            NORMAL BEST: {bestScore}
+          </Text>
+
+          <Text style={styles.bestText}>
+            ENDLESS BEST: {bestEndlessScore}
+          </Text>
+        </View>
+
+        <TouchableOpacity
+          style={styles.primaryBtn}
+          onPress={startGame}
+        >
+          <Text style={styles.primaryBtnText}>
+            START GAME
+          </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.secondaryBtn} onPress={quickPlay}>
-          <Text style={styles.secondaryBtnText}>QUICK PLAY</Text>
+        <TouchableOpacity
+          style={styles.secondaryBtn}
+          onPress={quickPlay}
+        >
+          <Text style={styles.secondaryBtnText}>
+            QUICK PLAY
+          </Text>
+        </TouchableOpacity>
+
+        {/* ENDLESS MODE */}
+        <TouchableOpacity
+          style={styles.endlessBtn}
+          onPress={endlessMode}
+        >
+          <Text style={styles.endlessBtnText}>
+            ENDLESS MODE
+          </Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
@@ -181,29 +439,64 @@ export default function HomeScreen() {
   if (gameStarted && timeLeft <= 0) {
     return (
       <SafeAreaView style={styles.container}>
-        <Text style={styles.gameOver}>SYSTEM FAILURE</Text>
+        <Text style={styles.gameOver}>
+          SYSTEM FAILURE
+        </Text>
 
-        <Text style={styles.finalText}>SCORE</Text>
+        <Text style={styles.finalText}>
+          FINAL SCORE
+        </Text>
+
         <Text style={styles.score}>{score}</Text>
 
-        <TouchableOpacity style={styles.primaryBtn} onPress={startGame}>
-          <Text style={styles.primaryBtnText}>RESTART</Text>
+        <Text style={styles.bestGameOver}>
+          BEST:{" "}
+          {gameMode === "normal"
+            ? bestScore
+            : bestEndlessScore}
+        </Text>
+
+        <Text style={styles.comboText}>
+          MAX LEVEL: {difficulty}
+        </Text>
+
+        <TouchableOpacity
+          style={styles.primaryBtn}
+          onPress={startGame}
+        >
+          <Text style={styles.primaryBtnText}>
+            RESTART
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity onPress={goHome}>
-          <Text style={{ color: "#888", marginTop: 20 }}>BACK HOME</Text>
+          <Text style={styles.backHome}>
+            BACK HOME
+          </Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
   }
 
   /* =========================
-     GAME SCREEN (FIXED HUD)
+     GAME SCREEN
   ========================= */
   return (
-    <SafeAreaView style={styles.container}>
+    <Animated.View
+      style={[
+        styles.container,
+        {
+          transform: [
+            {
+              translateX: shakeAnim,
+            },
+          ],
+        },
+      ]}
+    >
       <StatusBar style="light" />
 
+      {/* JUMPSCARE */}
       {showJumpScare && (
         <Image
           source={{
@@ -213,54 +506,98 @@ export default function HomeScreen() {
         />
       )}
 
-      {/* ================= HUD TOP BAR (FIXED) ================= */}
+      {/* HUD */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={goHome}>
-          <Text style={styles.backText}>← BACK</Text>
+          <Text style={styles.backText}>
+            ← BACK
+          </Text>
         </TouchableOpacity>
 
-        <Text style={styles.hudText}>Score: {score}</Text>
-        <Text style={styles.hudText}>Time: {timeLeft}</Text>
+        <View>
+          <Text style={styles.hudText}>
+            Score: {score}
+          </Text>
+
+          <Text style={styles.comboHud}>
+            Combo: {combo}
+          </Text>
+        </View>
+
+        <View>
+          <Text style={styles.hudText}>
+            Time: {timeLeft.toFixed(1)}
+          </Text>
+
+          <Text style={styles.levelText}>
+            Level: {difficulty}
+          </Text>
+
+          <Text style={styles.modeText}>
+            {gameMode.toUpperCase()}
+          </Text>
+        </View>
       </View>
 
-      {/* GAME CIRCLE */}
+      {/* CIRCLE */}
       <Animated.View
         style={[
           styles.circle,
           {
             left: circlePosition.x,
             top: circlePosition.y,
+
             transform: [{ scale: scaleAnim }],
-            backgroundColor: showBadCircle ? "#ff003c" : "#00f0ff",
+
+            backgroundColor: isBadCircle
+              ? `rgba(255,0,60,${
+                  0.5 + difficulty * 0.05
+                })`
+              : "#00f0ff",
+
+            shadowColor: isBadCircle
+              ? "#ff003c"
+              : "#00f0ff",
           },
         ]}
       >
-        <TouchableOpacity style={{ flex: 1 }} onPress={handleTap} />
+        <TouchableOpacity
+          style={{ flex: 1 }}
+          onPress={handleTap}
+        />
       </Animated.View>
-    </SafeAreaView>
+    </Animated.View>
   );
 }
 
-/* =========================
-   STYLES
-========================= */
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#05060a",
+    backgroundColor: "#02030a",
     alignItems: "center",
     justifyContent: "center",
+
+    borderTopWidth: 1,
+    borderTopColor: "rgba(0,240,255,0.08)",
   },
 
-  /* HOME */
+  glowCircle: {
+    shadowColor: "#00f0ff",
+    shadowOpacity: 1,
+    shadowRadius: 30,
+    elevation: 30,
+  },
+
   imageCircle: {
-    width: 160,
-    height: 160,
-    borderRadius: 80,
+    width: 170,
+    height: 170,
+    borderRadius: 100,
     overflow: "hidden",
-    marginBottom: 20,
-    borderWidth: 2,
+
+    borderWidth: 3,
     borderColor: "#00f0ff",
+
+    marginBottom: 25,
   },
 
   circleImage: {
@@ -269,98 +606,249 @@ const styles = StyleSheet.create({
   },
 
   logo: {
-    fontSize: 55,
+    fontSize: 58,
     fontWeight: "900",
     color: "#00f0ff",
-    letterSpacing: 4,
+
+    letterSpacing: 5,
   },
 
   subtitle: {
-    color: "#888",
-    marginTop: 10,
-    marginBottom: 40,
+    color: "#7d8590",
+
+    marginTop: 12,
+    marginBottom: 25,
+
+    fontSize: 14,
+    letterSpacing: 1,
+  },
+
+  bestContainer: {
+    marginBottom: 25,
+    alignItems: "center",
+  },
+
+  bestText: {
+    color: "#00f0ff",
+
+    fontSize: 14,
+
+    fontWeight: "700",
+
+    marginTop: 4,
+
+    letterSpacing: 1,
   },
 
   primaryBtn: {
     backgroundColor: "#00f0ff",
-    padding: 15,
-    borderRadius: 12,
-    width: 200,
+
+    width: 230,
+
+    paddingVertical: 16,
+
+    borderRadius: 16,
+
     marginTop: 10,
+
+    shadowColor: "#00f0ff",
+    shadowOpacity: 0.8,
+    shadowRadius: 20,
+    elevation: 15,
   },
 
   primaryBtnText: {
     textAlign: "center",
+
     fontWeight: "900",
+
     color: "#000",
+
+    letterSpacing: 2,
   },
 
   secondaryBtn: {
-    borderWidth: 1,
+    width: 230,
+
+    paddingVertical: 16,
+
+    borderRadius: 16,
+
+    borderWidth: 1.5,
     borderColor: "#00f0ff",
-    padding: 15,
-    borderRadius: 12,
-    width: 200,
-    marginTop: 10,
+
+    marginTop: 15,
   },
 
   secondaryBtnText: {
     textAlign: "center",
+
     color: "#00f0ff",
+
+    fontWeight: "700",
+
+    letterSpacing: 2,
   },
 
-  /* ================= HUD (FIXED) ================= */
+  endlessBtn: {
+    width: 230,
+
+    paddingVertical: 16,
+
+    borderRadius: 16,
+
+    marginTop: 15,
+
+    backgroundColor: "#ff003c",
+
+    shadowColor: "#ff003c",
+    shadowOpacity: 0.9,
+    shadowRadius: 20,
+    elevation: 15,
+  },
+
+  endlessBtnText: {
+    textAlign: "center",
+
+    color: "#fff",
+
+    fontWeight: "900",
+
+    letterSpacing: 2,
+  },
+
   topBar: {
     position: "absolute",
-    top: 50,
+
+    top: 55,
+
     width: "90%",
+
     flexDirection: "row",
+
     justifyContent: "space-between",
+
     alignItems: "center",
   },
 
   backText: {
     color: "#00f0ff",
+
     fontWeight: "900",
+
     fontSize: 16,
   },
 
   hudText: {
     color: "#fff",
+
     fontWeight: "900",
-    fontSize: 14,
+
+    fontSize: 15,
   },
 
-  /* GAME */
+  comboHud: {
+    color: "#00f0ff",
+
+    fontWeight: "700",
+
+    marginTop: 4,
+  },
+
+  levelText: {
+    color: "#ff2d55",
+
+    fontWeight: "700",
+
+    marginTop: 4,
+
+    textAlign: "right",
+  },
+
+  modeText: {
+    color: "#00f0ff",
+
+    marginTop: 3,
+
+    fontWeight: "700",
+
+    textAlign: "right",
+  },
+
   circle: {
     position: "absolute",
+
     width: 90,
     height: 90,
+
     borderRadius: 50,
+
+    shadowOpacity: 1,
+    shadowRadius: 25,
+
+    elevation: 25,
   },
 
   jumpscare: {
     position: "absolute",
+
     width: "100%",
     height: "100%",
+
     zIndex: 999,
   },
 
-  /* GAME OVER */
   gameOver: {
     color: "#ff2d55",
-    fontSize: 40,
+
+    fontSize: 42,
+
     fontWeight: "900",
+
+    letterSpacing: 3,
   },
 
   finalText: {
-    color: "#888",
-    marginTop: 20,
+    color: "#777",
+
+    marginTop: 25,
+
+    letterSpacing: 2,
   },
 
   score: {
-    fontSize: 80,
+    fontSize: 90,
+
     fontWeight: "900",
+
     color: "#fff",
+  },
+
+  bestGameOver: {
+    color: "#00f0ff",
+
+    fontSize: 18,
+
+    fontWeight: "700",
+
+    marginBottom: 15,
+  },
+
+  comboText: {
+    color: "#00f0ff",
+
+    marginBottom: 40,
+
+    fontWeight: "700",
+
+    letterSpacing: 1,
+  },
+
+  backHome: {
+    color: "#777",
+
+    marginTop: 20,
+
+    letterSpacing: 1,
   },
 });
